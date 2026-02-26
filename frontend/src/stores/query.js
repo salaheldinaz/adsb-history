@@ -15,6 +15,7 @@ export const useQueryStore = defineStore('query', {
     minBearing: null,
     maxBearing: null,
     hexCode: null,
+    hexCodeList: [], // Array of ICAO hex codes for bulk search
     flightCode: null,
     military: false,
     category: '',
@@ -112,6 +113,7 @@ export const useQueryStore = defineStore('query', {
       this.minBearing = null;
       this.maxBearing = null;
       this.hexCode = null;
+      this.hexCodeList = [];
       this.flightCode = null;
       this.military = false;
       this.category = '';
@@ -141,7 +143,7 @@ export const useQueryStore = defineStore('query', {
         if (this.maxSpeed) params.append('max_speed', this.maxSpeed);
         if (this.minBearing) params.append('min_bearing', this.minBearing/360 * 2 * Math.PI);
         if (this.maxBearing) params.append('max_bearing', this.maxBearing/360 * 2 * Math.PI);
-        if (this.hexCode) params.append('hex', this.hexCode);
+        if (this.hexCode && !this.hexCodeList?.length) params.append('hex', this.hexCode);
         if (this.flightCode) params.append('flight', this.flightCode);
         if (this.military) params.append('military', 'true');
         if (this.category) params.append('category', this.category);
@@ -150,23 +152,38 @@ export const useQueryStore = defineStore('query', {
         if (this.minTimeDiff) params.append('min_time_diff', this.minTimeDiff);
         if (this.maxTimeDiff) params.append('max_time_diff', this.maxTimeDiff);
 
-        // Determine which endpoint to use based on the number of ROIs
-        let endpoint = '/api/adsb/bbox';
-        
-        if (this.rois.length === 2) {
-          // Use the intersect_bboxes endpoint when exactly two ROIs are active
-          endpoint = '/api/adsb/intersect_bboxes';
-          
-          // Add both bounding boxes as parameters
-          params.append('bbox1', this.boundingBoxes[0].toString());
-          params.append('bbox2', this.boundingBoxes[1].toString());
-        } else if (this.rois.length === 1) {
-          // Use the original bbox parameter for a single ROI
-          params.append('bbox', this.boundingBoxes[0].toString());
-        }
+        let response;
 
-        // Use the API service to make the request
-        const response = await api.get(`${endpoint}?${params.toString()}`);
+        // Check if we should use the hex_list endpoint
+        if (this.hexCodeList && this.hexCodeList.length > 0) {
+          // Add bbox if ROI is selected (hex_list endpoint supports bbox filtering)
+          if (this.rois.length >= 1) {
+            params.append('bbox', this.boundingBoxes[0].toString());
+          }
+
+          // Use the hex_list endpoint for bulk hex code search
+          response = await api.post(`/api/adsb/hex_list?${params.toString()}`, {
+            hex_codes: this.hexCodeList
+          });
+        } else {
+          // Determine which endpoint to use based on the number of ROIs
+          let endpoint = '/api/adsb/bbox';
+
+          if (this.rois.length === 2) {
+            // Use the intersect_bboxes endpoint when exactly two ROIs are active
+            endpoint = '/api/adsb/intersect_bboxes';
+
+            // Add both bounding boxes as parameters
+            params.append('bbox1', this.boundingBoxes[0].toString());
+            params.append('bbox2', this.boundingBoxes[1].toString());
+          } else if (this.rois.length === 1) {
+            // Use the original bbox parameter for a single ROI
+            params.append('bbox', this.boundingBoxes[0].toString());
+          }
+
+          // Use the API service to make the request
+          response = await api.get(`${endpoint}?${params.toString()}`);
+        }
         this.searchResults = response.data;
         this.isLargeResult = this.searchResults?.count > 1000;
 
@@ -184,6 +201,7 @@ export const useQueryStore = defineStore('query', {
               minBearing: this.minBearing,
               maxBearing: this.maxBearing,
               hexCode: this.hexCode,
+              hexCodeList: this.hexCodeList,
               flightCode: this.flightCode,
               military: this.military,
               category: this.category,

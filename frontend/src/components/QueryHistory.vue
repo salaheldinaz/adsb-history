@@ -61,7 +61,10 @@ const formatRoiCount = (count) => {
 
 const getQueryTitle = (query) => {
   if (query.name) return query.name;
-  return `${formatRoiCount(query.params.rois.length)}${query.params.hexCode ? ' | ' + query.params.hexCode : ''}${query.params.flightCode ? ' | ' + query.params.flightCode : ''}`;
+  const hexInfo = query.params.hexCodeList?.length > 0
+    ? ` | ${query.params.hexCodeList.length} hex codes`
+    : (query.params.hexCode ? ' | ' + query.params.hexCode : '');
+  return `${formatRoiCount(query.params.rois.length)}${hexInfo}${query.params.flightCode ? ' | ' + query.params.flightCode : ''}`;
 };
 </script>
 
