@@ -7,6 +7,17 @@ import { ref, computed } from 'vue';
 const queryStore = useQueryStore();
 const { filteredSearchResults } = storeToRefs(queryStore);
 
+// Threshold for disabling the data table (too many rows)
+const DATA_TABLE_DISABLED_THRESHOLD = 100000;
+
+// Check if data table should be disabled due to large dataset
+const isDataTableDisabled = computed(() => {
+  if (!filteredSearchResults.value || !filteredSearchResults.value.results) {
+    return false;
+  }
+  return filteredSearchResults.value.results.length > DATA_TABLE_DISABLED_THRESHOLD;
+});
+
 // Define table headers
 const headers = [
   { title: 'ICAO', key: 'hex' },
@@ -98,8 +109,17 @@ const handleDownload = () => {
       </v-btn>
     </v-card-title>
     <v-card-text>
+      <v-alert
+        v-if="isDataTableDisabled"
+        type="info"
+        variant="tonal"
+        class="mb-0"
+      >
+        Data table is disabled for large datasets ({{ filteredSearchResults?.count?.toLocaleString() }} results).
+        Use the Download CSV button above to export the data.
+      </v-alert>
       <v-data-table
-        v-if="filteredSearchResults && filteredSearchResults.results"
+        v-else-if="filteredSearchResults && filteredSearchResults.results"
         :headers="headers"
         :items="filteredResults"
         :items-per-page="10"
