@@ -1,6 +1,7 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, watch } from 'vue';
 import { useQueryStore } from '../../stores/query';
+import { useUiStore } from '../../stores/ui';
 import { storeToRefs } from 'pinia';
 import { Bar } from 'vue-chartjs';
 import { 
@@ -24,13 +25,27 @@ ChartJS.register(
 );
 
 const queryStore = useQueryStore();
-const { filteredSearchResults } = storeToRefs(queryStore);
+const uiStore = useUiStore();
+const { filteredSearchResults, searchResults } = storeToRefs(queryStore);
+const { selectedAircraft } = storeToRefs(uiStore);
 
-// Toggle for stacked mode
-const isStackedMode = ref(false);
+// Toggle for stacked mode: 'total', 'aircraft', or 'aircraftType'
+const stackedMode = ref('total');
 
 // Toggle for aggregation period (week vs month)
 const isMonthlyMode = ref(false);
+
+// Threshold for disabling stacked modes (too many results)
+const STACKED_MODE_DISABLED_THRESHOLD = 100000;
+
+const isStackedModeDisabled = computed(() => {
+  if (!filteredSearchResults.value || !filteredSearchResults.value.results) {
+    return false;
+  }
+  return filteredSearchResults.value.results.length > STACKED_MODE_DISABLED_THRESHOLD;
+});
+
+const isStacked = computed(() => stackedMode.value !== 'total');
 
 // Chart options (computed to handle stacked mode)
 const chartOptions = computed(() => ({
@@ -41,14 +56,18 @@ const chartOptions = computed(() => ({
   scales: {
     y: {
       beginAtZero: true,
-      stacked: isStackedMode.value,
+      stacked: isStacked.value,
       title: {
         display: true,
-        text: isStackedMode.value ? 'Average Aircraft per Day (by Aircraft)' : 'Average Aircraft per Day'
+        text: stackedMode.value === 'aircraft'
+          ? 'Average Aircraft per Day (by Aircraft)'
+          : stackedMode.value === 'aircraftType'
+          ? 'Average Aircraft per Day (by Type)'
+          : 'Average Aircraft per Day'
       }
     },
     x: {
-      stacked: isStackedMode.value,
+      stacked: isStacked.value,
       title: {
         display: true,
         text: isMonthlyMode.value ? 'Month' : 'Week'
@@ -61,7 +80,19 @@ const chartOptions = computed(() => ({
       text: 'Aircraft Per Day',
     },
     legend: {
-      display: false
+      display: stackedMode.value === 'aircraftType',
+      position: 'right',
+      labels: {
+        boxWidth: 12,
+        padding: 8,
+        font: {
+          size: 11
+        }
+      },
+      onClick: (evt, legendItem) => {
+        const typecode = legendItem.text;
+        toggleTypecodeSelection(typecode);
+      }
     }
   }
 }));
@@ -73,8 +104,12 @@ const planesPerDay = computed(() => {
   }
 
   const dates = filteredSearchResults.value.results.map(result => new Date(result.t).toISOString().split('T')[0]);
-  const minDate = new Date(Math.min(...dates.map(d => new Date(d))));
-  const maxDate = new Date(Math.max(...dates.map(d => new Date(d))));
+
+  const timestamps = dates.map(d => new Date(d).getTime());
+  const minTimestamp = timestamps.reduce((min, t) => t < min ? t : min, timestamps[0]);
+  const maxTimestamp = timestamps.reduce((max, t) => t > max ? t : max, timestamps[0]);
+  const minDate = new Date(minTimestamp);
+  const maxDate = new Date(maxTimestamp);
   
   // Set maxDate to 00:00 on the following day to ensure the last date is fully included
   maxDate.setDate(maxDate.getDate() + 1);
@@ -106,9 +141,67 @@ const planesPerDay = computed(() => {
   return planesPerDay;
 });
 
+// Build a lookup map from hex to typecode for aircraft type stacking
+const hexToTypecode = computed(() => {
+  if (!filteredSearchResults.value || !filteredSearchResults.value.results) {
+    return {};
+  }
+  const map = {};
+  filteredSearchResults.value.results.forEach(result => {
+    if (result.hex && !map[result.hex]) {
+      map[result.hex] = result.typecode || '-';
+    }
+  });
+  return map;
+});
+
+// Build a lookup map from typecode to list of hex codes (from full search results)
+const typecodeToHexList = computed(() => {
+  if (!searchResults.value || !searchResults.value.results) {
+    return {};
+  }
+  const map = {};
+  searchResults.value.results.forEach(result => {
+    const typecode = result.typecode || '-';
+    if (!map[typecode]) {
+      map[typecode] = new Set();
+    }
+    if (result.hex) {
+      map[typecode].add(result.hex);
+    }
+  });
+  const result = {};
+  for (const [typecode, hexSet] of Object.entries(map)) {
+    result[typecode] = Array.from(hexSet);
+  }
+  return result;
+});
+
+const isTypecodeHidden = (typecode) => {
+  const hexList = typecodeToHexList.value[typecode];
+  if (!hexList || hexList.length === 0) return false;
+  return hexList.every(hex => !selectedAircraft.value.has(hex));
+};
+
+const toggleTypecodeSelection = (typecode) => {
+  const hexList = typecodeToHexList.value[typecode];
+  if (!hexList || hexList.length === 0) return;
+
+  const newSet = new Set(selectedAircraft.value);
+  const allHidden = hexList.every(hex => !newSet.has(hex));
+
+  if (allHidden) {
+    hexList.forEach(hex => newSet.add(hex));
+  } else {
+    hexList.forEach(hex => newSet.delete(hex));
+  }
+
+  uiStore.setSelectedAircraft(newSet);
+};
+
 // Compute the data for the chart
 const chartData = computed(() => {
-  console.log('Computing chart data, filteredSearchResults:', filteredSearchResults.value, 'stacked mode:', isStackedMode.value);
+  console.log('Computing chart data, filteredSearchResults:', filteredSearchResults.value, 'stacked mode:', stackedMode.value);
   
   if (!filteredSearchResults.value || !filteredSearchResults.value.results || filteredSearchResults.value.results.length === 0) {
     console.log('No search results available');
@@ -125,7 +218,7 @@ const chartData = computed(() => {
   // Use the shared planesPerDay computed property
   const planesPerDayData = planesPerDay.value;
 
-  if (!isStackedMode.value) {
+  if (stackedMode.value === 'total') {
     // Regular mode: calculate totals by period (week or month)
     const periodData = {};
     const sortedDates = Object.keys(planesPerDayData).sort();
@@ -196,8 +289,8 @@ const chartData = computed(() => {
         backgroundColor: '#3f51b5'
       }]
     };
-  } else {
-    // Stacked mode: track individual aircraft contributions by period
+  } else if (stackedMode.value === 'aircraft') {
+    // Stacked by aircraft: track individual aircraft contributions by period
     const periodAircraftData = {};
     const allAircraft = new Set();
     const sortedDates = Object.keys(planesPerDayData).sort();
@@ -269,11 +362,83 @@ const chartData = computed(() => {
       borderWidth: 1
     }));
 
-    console.log(`Processed stacked ${isMonthlyMode.value ? 'monthly' : 'weekly'} chart data:`, { 
-      periods: formattedLabels, 
-      aircraft: aircraftList.length, 
-      datasets: datasets.length 
+    console.log(`Processed stacked ${isMonthlyMode.value ? 'monthly' : 'weekly'} chart data:`, {
+      periods: formattedLabels,
+      aircraft: aircraftList.length,
+      datasets: datasets.length
     });
+
+    return {
+      labels: formattedLabels,
+      datasets: datasets
+    };
+  } else {
+    // Stacked by aircraft type: track aircraft type contributions by period
+    const periodTypeData = {};
+    const allTypes = new Set();
+    const sortedDates = Object.keys(planesPerDayData).sort();
+    const typecodeLookup = hexToTypecode.value;
+
+    sortedDates.forEach(date => {
+      const dateObj = new Date(date);
+      let periodKey;
+
+      if (isMonthlyMode.value) {
+        periodKey = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, '0')}`;
+      } else {
+        const weekStart = new Date(dateObj);
+        weekStart.setDate(dateObj.getDate() - dateObj.getDay());
+        periodKey = weekStart.toISOString().split('T')[0];
+      }
+
+      if (!periodTypeData[periodKey]) {
+        periodTypeData[periodKey] = {};
+      }
+
+      planesPerDayData[date].forEach(hex => {
+        const typecode = typecodeLookup[hex] || '-';
+        allTypes.add(typecode);
+        if (!periodTypeData[periodKey][typecode]) {
+          periodTypeData[periodKey][typecode] = 0;
+        }
+        periodTypeData[periodKey][typecode] += 1;
+      });
+    });
+
+    const periodLabels = Object.keys(periodTypeData).sort();
+
+    const formattedLabels = periodLabels.map(periodKey => {
+      if (isMonthlyMode.value) {
+        const [year, month] = periodKey.split('-');
+        const date = new Date(parseInt(year), parseInt(month) - 1, 1);
+        return date.toLocaleDateString('en-US', { year: 'numeric', month: 'long' });
+      } else {
+        const start = new Date(periodKey);
+        const end = new Date(start);
+        end.setDate(end.getDate() + 6);
+        return `${start.toLocaleDateString()} - ${end.toLocaleDateString()}`;
+      }
+    });
+
+    const typeList = Array.from(allTypes).sort();
+
+    const datasets = typeList.map((typecode) => ({
+      label: typecode,
+      data: periodLabels.map(periodKey => {
+        const count = periodTypeData[periodKey][typecode] || 0;
+        if (isMonthlyMode.value) {
+          const [year, month] = periodKey.split('-');
+          const daysInMonth = new Date(parseInt(year), parseInt(month), 0).getDate();
+          return count / daysInMonth;
+        } else {
+          return count / 7;
+        }
+      }),
+      backgroundColor: getConsistentColor(typecode),
+      borderColor: getConsistentColor(typecode),
+      borderWidth: 1,
+      hidden: isTypecodeHidden(typecode)
+    }));
 
     return {
       labels: formattedLabels,
@@ -389,6 +554,12 @@ const handleBarClick = (event, elements) => {
   console.log(`Clicked bar ${clickedIndex}: ${formattedStartDate} to ${formattedEndDate}`);
 };
 
+watch(isStackedModeDisabled, (disabled) => {
+  if (disabled && stackedMode.value !== 'total') {
+    stackedMode.value = 'total';
+  }
+});
+
 // Debug on mount
 onMounted(() => {
   console.log('Component mounted, chartData:', chartData.value);
@@ -413,22 +584,33 @@ onMounted(() => {
           <v-btn :value="true" class="px-4">Monthly</v-btn>
         </v-btn-toggle>
         <v-btn-toggle
-          v-model="isStackedMode"
+          v-model="stackedMode"
           mandatory
           density="compact"
           color="primary"
           variant="outlined"
           divided
         >
-          <v-btn :value="false" class="px-4">Total</v-btn>
-          <v-btn :value="true" class="px-4">By Aircraft</v-btn>
+          <v-btn value="total" class="px-4">Total</v-btn>
+          <v-btn
+            value="aircraft"
+            class="px-4"
+            :disabled="isStackedModeDisabled"
+            :title="isStackedModeDisabled ? 'Disabled for large datasets' : ''"
+          >By Aircraft</v-btn>
+          <v-btn
+            value="aircraftType"
+            class="px-4"
+            :disabled="isStackedModeDisabled"
+            :title="isStackedModeDisabled ? 'Disabled for large datasets' : ''"
+          >By Type</v-btn>
         </v-btn-toggle>
       </div>
     </v-card-title>
     <v-card-text>
       <div v-if="filteredSearchResults && filteredSearchResults.results && filteredSearchResults.results.length > 0" style="height: 400px; position: relative; cursor: pointer;" title="Click on a bar to filter by that time period">
         <Bar 
-          :key="`${isStackedMode ? 'stacked' : 'total'}-${isMonthlyMode ? 'monthly' : 'weekly'}`"
+          :key="`${stackedMode}-${isMonthlyMode ? 'monthly' : 'weekly'}-${selectedAircraft.size}`"
           :data="chartData" 
           :options="chartOptions" 
           @chart:render="() => console.log('Chart rendered')"

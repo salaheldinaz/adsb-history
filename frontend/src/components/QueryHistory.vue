@@ -1,11 +1,13 @@
 <script setup>
 import { useQueryStore } from '@/stores/query';
 import { useQueryHistoryStore } from '@/stores/queryHistory';
+import { useUiStore } from '@/stores/ui';
 import { storeToRefs } from 'pinia';
 import { ref, nextTick, onMounted } from 'vue';
 
 const queryStore = useQueryStore();
 const queryHistoryStore = useQueryHistoryStore();
+const uiStore = useUiStore();
 const { metadata, isLoading, error } = storeToRefs(queryHistoryStore);
 
 const editingQueryId = ref(null);
@@ -24,6 +26,10 @@ const loadHistoricalQuery = async (queryId) => {
     queryStore.updateQueryParams(query.params);
     queryStore.searchResults = query.results;
     queryStore.isLargeResult = query.isLargeResult;
+
+    if (query.selectedAircraft && query.selectedAircraft.length > 0) {
+      uiStore.setSelectedAircraft(new Set(query.selectedAircraft));
+    }
   }
 };
 

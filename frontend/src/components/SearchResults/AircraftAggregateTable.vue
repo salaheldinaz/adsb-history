@@ -1,20 +1,38 @@
 <script setup>
 import { useQueryStore } from '../../stores/query';
+import { useQueryHistoryStore } from '../../stores/queryHistory';
 import { useUiStore } from '../../stores/ui';
 import { storeToRefs } from 'pinia';
 import { computed, ref, watch } from 'vue';
 import { downloadCSV } from '../../utils/csvExport';
 
+// Debounce helper
+const debounce = (fn, delay) => {
+  let timeoutId;
+  return (...args) => {
+    clearTimeout(timeoutId);
+    timeoutId = setTimeout(() => fn(...args), delay);
+  };
+};
+
 const queryStore = useQueryStore();
+const queryHistoryStore = useQueryHistoryStore();
 const uiStore = useUiStore();
 const { searchResults } = storeToRefs(queryStore);
-const { hoveredAircraft, aircraftFilter } = storeToRefs(uiStore);
+const { hoveredAircraft, aircraftFilter, selectedAircraft } = storeToRefs(uiStore);
+
+// Debounced function to save selection changes to history (1.5s delay for efficiency)
+const debouncedSaveSelection = debounce((selection) => {
+  queryHistoryStore.updateSelectedAircraft(selection);
+}, 1500);
 
 const currentItems = ref([]);
 const searchQuery = ref('');
+const checkedFilter = ref('all'); // 'all', 'checked', 'unchecked'
 
 // Define table headers
 const headers = [
+  { title: '', key: 'checkbox', sortable: false, width: '48px' },
   { title: 'ICAO', key: 'hex' },
   { title: 'Flight Codes', key: 'flights' },
   { title: 'First Seen', key: 'firstSeen' },
@@ -98,13 +116,24 @@ const aggregatedData = computed(() => {
   }));
 });
 
-// Filtered data based on search query
+// Filtered data based on search query and checked state
 const filteredData = computed(() => {
   if (!aggregatedData.value) return [];
-  if (!searchQuery.value) return aggregatedData.value;
+
+  let data = aggregatedData.value;
+
+  // Filter by checked state
+  if (checkedFilter.value === 'checked') {
+    data = data.filter(item => uiStore.isAircraftSelected(item.hex));
+  } else if (checkedFilter.value === 'unchecked') {
+    data = data.filter(item => !uiStore.isAircraftSelected(item.hex));
+  }
+
+  // Filter by search query
+  if (!searchQuery.value) return data;
 
   const query = searchQuery.value.toLowerCase();
-  return aggregatedData.value.filter((item) => {
+  return data.filter((item) => {
     return (
       (item.hex && item.hex.toLowerCase().includes(query)) ||
       (item.flights && item.flights.toLowerCase().includes(query)) ||
@@ -129,6 +158,36 @@ const enableHover = computed(() => {
   return searchResults.value?.results?.length <= 10000;
 });
 
+// Check if all visible aircraft are selected
+const allSelected = computed(() => {
+  if (!filteredData.value || filteredData.value.length === 0) return false;
+  return filteredData.value.every(item => uiStore.isAircraftSelected(item.hex));
+});
+
+// Check if some (but not all) visible aircraft are selected
+const someSelected = computed(() => {
+  if (!filteredData.value || filteredData.value.length === 0) return false;
+  const selectedCount = filteredData.value.filter(item => uiStore.isAircraftSelected(item.hex)).length;
+  return selectedCount > 0 && selectedCount < filteredData.value.length;
+});
+
+// Toggle all visible aircraft selection
+const toggleSelectAll = () => {
+  if (!filteredData.value || filteredData.value.length === 0) return;
+
+  const newSet = new Set(selectedAircraft.value);
+  const allHexCodes = filteredData.value.map(item => item.hex);
+
+  if (allSelected.value) {
+    allHexCodes.forEach(hex => newSet.delete(hex));
+  } else {
+    allHexCodes.forEach(hex => newSet.add(hex));
+  }
+
+  uiStore.setSelectedAircraft(newSet);
+  triggerSelectionSave();
+};
+
 // Watch for changes in local searchQuery and sync to UI store
 watch(searchQuery, (newValue) => {
   uiStore.setAircraftFilter(newValue);
@@ -141,7 +200,35 @@ watch(aircraftFilter, (newValue) => {
   }
 });
 
+// Track if we're restoring from history (to skip the auto-save on restore)
+const isRestoringFromHistory = ref(false);
 
+// Initialize selected aircraft when search results change
+watch(() => searchResults.value?.results, (newResults) => {
+  if (newResults && newResults.length > 0) {
+    const currentQueryMeta = queryHistoryStore.metadata.find(
+      q => q.id === queryHistoryStore.currentQueryId
+    );
+
+    if (currentQueryMeta?.selectedAircraft && currentQueryMeta.selectedAircraft.length > 0) {
+      isRestoringFromHistory.value = true;
+      uiStore.setSelectedAircraft(new Set(currentQueryMeta.selectedAircraft));
+      setTimeout(() => { isRestoringFromHistory.value = false; }, 100);
+    } else {
+      const allHexCodes = new Set(newResults.map(record => record.hex));
+      uiStore.setSelectedAircraft(allHexCodes);
+    }
+  } else {
+    uiStore.setSelectedAircraft(new Set());
+  }
+}, { immediate: true });
+
+// Function to trigger save after selection change
+const triggerSelectionSave = () => {
+  if (isRestoringFromHistory.value || !queryHistoryStore.currentQueryId) return;
+  if (!searchResults.value?.results?.length) return;
+  debouncedSaveSelection(selectedAircraft.value);
+};
 
 // Function to handle current items update
 const handleCurrentItemsUpdate = (items) => {
@@ -151,25 +238,15 @@ const handleCurrentItemsUpdate = (items) => {
 
 // Handle clicking on a hex code chip
 const searchByHex = (hex) => {
-  // Reset the query parameters
   queryStore.resetQueryParams();
-
-  // Update the hex code in the query parameters
   queryStore.updateQueryParams({ hexCode: hex });
-
-  // Perform the search with the new query
   queryStore.search();
 };
 
 // Handle clicking on a flight code chip
 const searchByFlight = (flight) => {
-  // Reset the query parameters
   queryStore.resetQueryParams();
-
-  // Update the flight code in the query parameters
   queryStore.updateQueryParams({ flightCode: flight });
-
-  // Perform the search with the new query
   queryStore.search();
 };
 
@@ -179,6 +256,7 @@ const handleDownload = () => {
 
   const formattedData = aggregatedData.value.map((item) => ({
     hex: item.hex,
+    checked: uiStore.isAircraftSelected(item.hex) ? 'Yes' : 'No',
     flights: item.flights,
     firstSeen: formatDate(item.firstSeen),
     lastSeen: formatDate(item.lastSeen),
@@ -202,7 +280,25 @@ const handleDownload = () => {
   <v-card class="mb-4">
     <v-card-title class="d-flex justify-space-between align-center">
       <span>Aircraft Summary</span>
-      <div class="d-flex gap-4 align-center">
+      <div class="d-flex gap-8 align-center">
+        <v-btn-toggle
+          v-if="searchResults && searchResults.results"
+          v-model="checkedFilter"
+          mandatory
+          density="compact"
+          variant="outlined"
+          divided
+          class="mr-4"
+        >
+          <v-btn value="all" size="small">All</v-btn>
+          <v-btn value="checked" size="small">
+            <v-icon size="small" class="mr-1">mdi-checkbox-marked</v-icon>
+          </v-btn>
+          <v-btn value="unchecked" size="small">
+            <v-icon size="small" class="mr-1">mdi-checkbox-blank-outline</v-icon>
+          </v-btn>
+        </v-btn-toggle>
+
         <v-text-field
           v-if="searchResults && searchResults.results"
           v-model="searchQuery"
@@ -211,8 +307,8 @@ const handleDownload = () => {
           clearable
           hide-details
           density="compact"
-          class="mr-6"
           style="width: 200px"
+          class="mr-4"
         ></v-text-field>
 
         <v-btn
@@ -235,6 +331,15 @@ const handleDownload = () => {
         @update:currentItems="handleCurrentItemsUpdate"
         class="elevation-1"
       >
+        <template v-slot:header.checkbox>
+          <v-checkbox
+            :model-value="allSelected"
+            :indeterminate="someSelected"
+            @update:model-value="toggleSelectAll"
+            hide-details
+            density="compact"
+          ></v-checkbox>
+        </template>
         <template v-slot:item="{ item, columns }">
           <tr
             @mouseenter="enableHover ? uiStore.setHoveredAircraft(item.hex) : null"
@@ -242,7 +347,26 @@ const handleDownload = () => {
             :class="{ 'hover-row': uiStore.hoveredAircraft === item.hex }"
           >
             <td v-for="column in columns" :key="column.key">
-              <template v-if="column.key === 'hex'">
+              <template v-if="column.key === 'checkbox'">
+                <v-checkbox
+                  :model-value="uiStore.isAircraftSelected(item.hex)"
+                  @update:model-value="(value) => {
+                    if (value) {
+                      const newSet = new Set(uiStore.selectedAircraft);
+                      newSet.add(item.hex);
+                      uiStore.setSelectedAircraft(newSet);
+                    } else {
+                      const newSet = new Set(uiStore.selectedAircraft);
+                      newSet.delete(item.hex);
+                      uiStore.setSelectedAircraft(newSet);
+                    }
+                    triggerSelectionSave();
+                  }"
+                  hide-details
+                  density="compact"
+                ></v-checkbox>
+              </template>
+              <template v-else-if="column.key === 'hex'">
                 <v-chip
                   @click="searchByHex(item.hex)"
                   variant="outlined"

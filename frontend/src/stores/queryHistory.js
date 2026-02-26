@@ -22,10 +22,11 @@ export const useQueryHistoryStore = defineStore('queryHistory', {
     isLoading: false,
     error: null,
     missingDataError: null, // New state for tracking missing data
+    currentQueryId: null, // Track the ID of the current query for updating selections
   }),
 
   actions: {
-    async addQuery(queryParams, searchResults) {
+    async addQuery(queryParams, searchResults, selectedAircraft = null) {
       const authStore = useAuthStore();
       const indexedDBStore = useIndexedDBStore();
       if (!authStore.user) return;
@@ -50,6 +51,10 @@ export const useQueryHistoryStore = defineStore('queryHistory', {
           }))
         };
         
+        const selectedAircraftArray = selectedAircraft
+          ? Array.from(selectedAircraft)
+          : [...new Set(searchResults?.results?.map(r => r.hex) || [])];
+
         const metadataEntry = {
           name: null,
           timestamp,
@@ -58,6 +63,7 @@ export const useQueryHistoryStore = defineStore('queryHistory', {
           userEmail: authStore.user.email,
           resultCount,
           isLargeResult: resultCount > 1000,
+          selectedAircraft: selectedAircraftArray,
         };
 
         console.log('metadataEntry', metadataEntry);
@@ -77,6 +83,7 @@ export const useQueryHistoryStore = defineStore('queryHistory', {
         }
         
         this.metadata.unshift({ id: metadataRef.id, ...metadataEntry });
+        this.currentQueryId = metadataRef.id;
       } catch (error) {
         console.error('Error adding query to history:', error);
         this.error = error.message;
@@ -162,7 +169,9 @@ export const useQueryHistoryStore = defineStore('queryHistory', {
         };
 
         const fullQuery = { id: metadataSnap.id, ...transformedMetadata, results };
-        
+
+        this.currentQueryId = queryId;
+
         // Update local state
         const index = this.metadata.findIndex((q) => q.id === queryId);
         if (index !== -1) {
@@ -176,6 +185,24 @@ export const useQueryHistoryStore = defineStore('queryHistory', {
         console.error('Error loading query:', error);
         this.error = error.message;
         return null;
+      }
+    },
+
+    async updateSelectedAircraft(selectedAircraft) {
+      const authStore = useAuthStore();
+      if (!authStore.user || !this.currentQueryId) return;
+
+      try {
+        const selectedAircraftArray = Array.from(selectedAircraft);
+        const docRef = doc(db, 'queryMetadata', this.currentQueryId);
+        await updateDoc(docRef, { selectedAircraft: selectedAircraftArray });
+
+        const index = this.metadata.findIndex((q) => q.id === this.currentQueryId);
+        if (index !== -1) {
+          this.metadata[index].selectedAircraft = selectedAircraftArray;
+        }
+      } catch (error) {
+        console.error('Error updating selected aircraft:', error);
       }
     },
 

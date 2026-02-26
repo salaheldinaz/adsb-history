@@ -50,7 +50,7 @@ export const useQueryStore = defineStore('query', {
       });
     },
 
-    // Filtered search results based on aircraft filter from UI store
+    // Filtered search results based on aircraft selection and filter from UI store
     filteredSearchResults: (state) => {
       const uiStore = useUiStore();
       
@@ -58,36 +58,46 @@ export const useQueryStore = defineStore('query', {
         return null;
       }
 
-      if (!uiStore.aircraftFilter) {
-        return state.searchResults;
+      let filteredResults = state.searchResults.results;
+
+      // Filter by selected aircraft (checkbox selection)
+      if (uiStore.selectedAircraft.size === 0 && state.searchResults.results.length > 0) {
+        // User unchecked all aircraft, show nothing
+        filteredResults = [];
+      } else if (uiStore.selectedAircraft.size > 0) {
+        // Filter by selected aircraft
+        filteredResults = filteredResults.filter(record =>
+          uiStore.selectedAircraft.has(record.hex)
+        );
       }
 
-      const query = uiStore.aircraftFilter.toLowerCase();
-      const filteredResults = state.searchResults.results.filter(record => {
-        // First aggregate the record to match aircraft aggregate table logic
-        const aircraftData = {
-          hex: record.hex,
-          registration: record.registration,
-          aircraft: record.aircraft,
-          typecode: record.typecode,
-          owner: record.owner,
-          category: record.category,
-          military: record.military,
-          flight: record.flight
-        };
+      // Filter by text search query
+      if (uiStore.aircraftFilter) {
+        const query = uiStore.aircraftFilter.toLowerCase();
+        filteredResults = filteredResults.filter(record => {
+          const aircraftData = {
+            hex: record.hex,
+            registration: record.registration,
+            aircraft: record.aircraft,
+            typecode: record.typecode,
+            owner: record.owner,
+            category: record.category,
+            military: record.military,
+            flight: record.flight
+          };
 
-        // Apply the same filtering logic as aircraft aggregate table
-        return (
-          (aircraftData.hex && aircraftData.hex.toLowerCase().includes(query)) ||
-          (aircraftData.flight && aircraftData.flight.toLowerCase().includes(query)) ||
-          (aircraftData.registration && aircraftData.registration.toLowerCase().includes(query)) ||
-          (aircraftData.aircraft && aircraftData.aircraft.toLowerCase().includes(query)) ||
-          (aircraftData.typecode && aircraftData.typecode.toLowerCase().includes(query)) ||
-          (aircraftData.owner && aircraftData.owner.toLowerCase().includes(query)) ||
-          (aircraftData.category && aircraftData.category.toLowerCase().includes(query)) ||
-          (aircraftData.military !== null && aircraftData.military.toString().toLowerCase().includes(query))
-        );
-      });
+          return (
+            (aircraftData.hex && aircraftData.hex.toLowerCase().includes(query)) ||
+            (aircraftData.flight && aircraftData.flight.toLowerCase().includes(query)) ||
+            (aircraftData.registration && aircraftData.registration.toLowerCase().includes(query)) ||
+            (aircraftData.aircraft && aircraftData.aircraft.toLowerCase().includes(query)) ||
+            (aircraftData.typecode && aircraftData.typecode.toLowerCase().includes(query)) ||
+            (aircraftData.owner && aircraftData.owner.toLowerCase().includes(query)) ||
+            (aircraftData.category && aircraftData.category.toLowerCase().includes(query)) ||
+            (aircraftData.military !== null && aircraftData.military.toString().toLowerCase().includes(query))
+          );
+        });
+      }
 
       return {
         ...state.searchResults,
@@ -189,6 +199,9 @@ export const useQueryStore = defineStore('query', {
 
         // Add to history after successful search
         if (!this.error && this.searchResults) {
+          const uiStore = useUiStore();
+          const allHexCodes = new Set(this.searchResults.results?.map(r => r.hex) || []);
+
           queryHistoryStore.addQuery(
             {
               startDate: this.startDate,
@@ -210,7 +223,8 @@ export const useQueryStore = defineStore('query', {
               minTimeDiff: this.minTimeDiff,
               maxTimeDiff: this.maxTimeDiff
             },
-            this.searchResults
+            this.searchResults,
+            allHexCodes
           );
         }
       } catch (error) {
