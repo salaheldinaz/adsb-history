@@ -50,7 +50,7 @@ export const useQueryStore = defineStore('query', {
       });
     },
 
-    // Filtered search results based on aircraft selection and filter from UI store
+    // Filtered search results based on aircraft filter from UI store
     filteredSearchResults: (state) => {
       const uiStore = useUiStore();
       
@@ -61,20 +61,24 @@ export const useQueryStore = defineStore('query', {
       let filteredResults = state.searchResults.results;
 
       // Filter by selected aircraft (checkbox selection)
+      // If selectedAircraft is empty but we have results, it means user unchecked all, so show nothing
+      // If selectedAircraft has items, filter by them
       if (uiStore.selectedAircraft.size === 0 && state.searchResults.results.length > 0) {
         // User unchecked all aircraft, show nothing
         filteredResults = [];
       } else if (uiStore.selectedAircraft.size > 0) {
         // Filter by selected aircraft
-        filteredResults = filteredResults.filter(record =>
+        filteredResults = filteredResults.filter(record => 
           uiStore.selectedAircraft.has(record.hex)
         );
       }
+      // If selectedAircraft.size === 0 and no results, filteredResults stays as empty array (no results to show anyway)
 
       // Filter by text search query
       if (uiStore.aircraftFilter) {
         const query = uiStore.aircraftFilter.toLowerCase();
         filteredResults = filteredResults.filter(record => {
+          // First aggregate the record to match aircraft aggregate table logic
           const aircraftData = {
             hex: record.hex,
             registration: record.registration,
@@ -86,6 +90,7 @@ export const useQueryStore = defineStore('query', {
             flight: record.flight
           };
 
+          // Apply the same filtering logic as aircraft aggregate table
           return (
             (aircraftData.hex && aircraftData.hex.toLowerCase().includes(query)) ||
             (aircraftData.flight && aircraftData.flight.toLowerCase().includes(query)) ||
@@ -153,7 +158,7 @@ export const useQueryStore = defineStore('query', {
         if (this.maxSpeed) params.append('max_speed', this.maxSpeed);
         if (this.minBearing) params.append('min_bearing', this.minBearing/360 * 2 * Math.PI);
         if (this.maxBearing) params.append('max_bearing', this.maxBearing/360 * 2 * Math.PI);
-        if (this.hexCode && !this.hexCodeList?.length) params.append('hex', this.hexCode);
+        if (this.hexCode) params.append('hex', this.hexCode);
         if (this.flightCode) params.append('flight', this.flightCode);
         if (this.military) params.append('military', 'true');
         if (this.category) params.append('category', this.category);
@@ -170,7 +175,7 @@ export const useQueryStore = defineStore('query', {
           if (this.rois.length >= 1) {
             params.append('bbox', this.boundingBoxes[0].toString());
           }
-
+          
           // Use the hex_list endpoint for bulk hex code search
           response = await api.post(`/api/adsb/hex_list?${params.toString()}`, {
             hex_codes: this.hexCodeList
@@ -178,11 +183,11 @@ export const useQueryStore = defineStore('query', {
         } else {
           // Determine which endpoint to use based on the number of ROIs
           let endpoint = '/api/adsb/bbox';
-
+          
           if (this.rois.length === 2) {
             // Use the intersect_bboxes endpoint when exactly two ROIs are active
             endpoint = '/api/adsb/intersect_bboxes';
-
+            
             // Add both bounding boxes as parameters
             params.append('bbox1', this.boundingBoxes[0].toString());
             params.append('bbox2', this.boundingBoxes[1].toString());
@@ -199,9 +204,10 @@ export const useQueryStore = defineStore('query', {
 
         // Add to history after successful search
         if (!this.error && this.searchResults) {
+          // Get selected aircraft from UI store - initially all hex codes from results
           const uiStore = useUiStore();
           const allHexCodes = new Set(this.searchResults.results?.map(r => r.hex) || []);
-
+          
           queryHistoryStore.addQuery(
             {
               startDate: this.startDate,
@@ -224,7 +230,7 @@ export const useQueryStore = defineStore('query', {
               maxTimeDiff: this.maxTimeDiff
             },
             this.searchResults,
-            allHexCodes
+            allHexCodes // Save all aircraft as selected initially
           );
         }
       } catch (error) {

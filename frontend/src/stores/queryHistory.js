@@ -51,7 +51,8 @@ export const useQueryHistoryStore = defineStore('queryHistory', {
           }))
         };
         
-        const selectedAircraftArray = selectedAircraft
+        // Convert selectedAircraft Set to Array for storage (or use all hex codes if not provided)
+        const selectedAircraftArray = selectedAircraft 
           ? Array.from(selectedAircraft)
           : [...new Set(searchResults?.results?.map(r => r.hex) || [])];
 
@@ -169,9 +170,7 @@ export const useQueryHistoryStore = defineStore('queryHistory', {
         };
 
         const fullQuery = { id: metadataSnap.id, ...transformedMetadata, results };
-
-        this.currentQueryId = queryId;
-
+        
         // Update local state
         const index = this.metadata.findIndex((q) => q.id === queryId);
         if (index !== -1) {
@@ -180,29 +179,14 @@ export const useQueryHistoryStore = defineStore('queryHistory', {
           this.metadata.unshift(fullQuery);
         }
         
+        // Track the current query for selection updates
+        this.currentQueryId = queryId;
+        
         return fullQuery;
       } catch (error) {
         console.error('Error loading query:', error);
         this.error = error.message;
         return null;
-      }
-    },
-
-    async updateSelectedAircraft(selectedAircraft) {
-      const authStore = useAuthStore();
-      if (!authStore.user || !this.currentQueryId) return;
-
-      try {
-        const selectedAircraftArray = Array.from(selectedAircraft);
-        const docRef = doc(db, 'queryMetadata', this.currentQueryId);
-        await updateDoc(docRef, { selectedAircraft: selectedAircraftArray });
-
-        const index = this.metadata.findIndex((q) => q.id === this.currentQueryId);
-        if (index !== -1) {
-          this.metadata[index].selectedAircraft = selectedAircraftArray;
-        }
-      } catch (error) {
-        console.error('Error updating selected aircraft:', error);
       }
     },
 
@@ -222,6 +206,26 @@ export const useQueryHistoryStore = defineStore('queryHistory', {
       } catch (error) {
         console.error('Error updating query name:', error);
         this.error = error.message;
+      }
+    },
+
+    async updateSelectedAircraft(selectedAircraft) {
+      const authStore = useAuthStore();
+      if (!authStore.user || !this.currentQueryId) return;
+
+      try {
+        const selectedAircraftArray = Array.from(selectedAircraft);
+        const docRef = doc(db, 'queryMetadata', this.currentQueryId);
+        await updateDoc(docRef, { selectedAircraft: selectedAircraftArray });
+        
+        // Update local state
+        const index = this.metadata.findIndex((q) => q.id === this.currentQueryId);
+        if (index !== -1) {
+          this.metadata[index].selectedAircraft = selectedAircraftArray;
+        }
+      } catch (error) {
+        console.error('Error updating selected aircraft:', error);
+        // Don't set this.error for selection updates to avoid UI disruption
       }
     },
 
