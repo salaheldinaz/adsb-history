@@ -174,11 +174,13 @@ def get_by_bbox():
     - max_speed (optional): Maximum speed in knots
     - military (optional): Filter for military aircraft (true/false)
     - category (optional): Filter by aircraft category
+    - typecode (optional): Filter by aircraft type code
     - limit (optional): Maximum number of records to return (default: 1000)
     - offset (optional): Number of records to skip (default: 0)
     
     Returns:
-    - Standard ADS-B fields: t, hex, flight, alt, gs, type, bearing, geom
+    - Standard ADS-B fields: t, hex, flight, alt, gs, lon, lat, bearing, registration,
+      typecode, category, military, owner, aircraft
     """
     try:
         # Log request parameters with user email
@@ -384,6 +386,245 @@ def get_by_bbox():
     except Exception as e:
         logger.error(f"Error in /api/adsb/bbox from {email}: {str(e)}", exc_info=True)
         return jsonify({"error": str(e)}), 500
+
+@app.route('/api/adsb/hex_list', methods=['POST'])
+@require_firebase_auth
+def search_by_hex_list():
+    """
+    Search for ADS-B data matching any of the provided ICAO hex codes.
+    
+    Uses an optimized query with unnest/CROSS JOIN LATERAL for efficient index usage.
+    
+    Request Body (JSON):
+    - hex_codes (required): Array of hex code strings (max 1000)
+    
+    Query Parameters:
+    - bbox (optional): Bounding box in format "min_lon,min_lat,max_lon,max_lat"
+    - flight (optional): Flight number/call sign
+    - start_time (optional): ISO 8601 timestamp (YYYY-MM-DDTHH:MM:SSZ)
+    - end_time (optional): ISO 8601 timestamp (YYYY-MM-DDTHH:MM:SSZ)
+    - min_alt (optional): Minimum altitude in feet
+    - max_alt (optional): Maximum altitude in feet
+    - min_bearing (optional): Minimum bearing in degrees (0-360)
+    - max_bearing (optional): Maximum bearing in degrees (0-360)
+    - min_speed (optional): Minimum speed in knots
+    - max_speed (optional): Maximum speed in knots
+    - military (optional): Filter for military aircraft (true/false)
+    - category (optional): Filter by aircraft category
+    - typecode (optional): Filter by aircraft type code
+    - limit (optional): Maximum number of records to return (default: 1000)
+    - offset (optional): Number of records to skip (default: 0)
+    
+    Returns:
+    - Standard ADS-B fields: t, hex, flight, alt, gs, lon, lat, bearing, registration,
+      typecode, category, military, owner, aircraft
+    """
+    try:
+        # Log request parameters with user email
+        email = request.user.get('email', 'unknown')
+        logger.info(f"API Request from {email}: /api/adsb/hex_list")
+        
+        # Get JSON body
+        data = request.get_json()
+        if not data or 'hex_codes' not in data:
+            return jsonify({"error": "hex_codes array is required in request body"}), 400
+        
+        hex_codes = data.get('hex_codes', [])
+        
+        # Validate hex_codes
+        if not isinstance(hex_codes, list) or len(hex_codes) == 0:
+            return jsonify({"error": "hex_codes must be a non-empty array"}), 400
+        
+        if len(hex_codes) > 1000:
+            return jsonify({"error": "Maximum 1000 hex codes allowed per request"}), 400
+        
+        # Validate each hex code format
+        for hex_code in hex_codes:
+            if not isinstance(hex_code, str) or not all(c in '~0123456789ABCDEFabcdef' for c in hex_code):
+                return jsonify({"error": f"Invalid hex code format: {hex_code}"}), 400
+        
+        # Get query parameters (same as bbox endpoint)
+        bbox = request.args.get('bbox')
+        flight_code = request.args.get('flight')
+        start_time = request.args.get('start_time')
+        end_time = request.args.get('end_time')
+        min_alt = request.args.get('min_alt')
+        max_alt = request.args.get('max_alt')
+        min_bearing = request.args.get('min_bearing')
+        max_bearing = request.args.get('max_bearing')
+        min_speed = request.args.get('min_speed')
+        max_speed = request.args.get('max_speed')
+        military = request.args.get('military')
+        category = request.args.get('category')
+        typecode = request.args.get('typecode')
+        
+        # Pagination parameters
+        limit = request.args.get('limit', '1000')
+        offset = request.args.get('offset', '0')
+        
+        try:
+            limit = min(int(limit), 1000000)  # Cap at 1,000,000 records
+            offset = max(int(offset), 0)
+        except ValueError:
+            logger.error(f"Invalid limit/offset from {email}: limit={limit}, offset={offset}")
+            return jsonify({"error": "Invalid limit or offset parameters"}), 400
+        
+        # Build conditions for the lateral subquery
+        lateral_conditions = ["adsb.hex = h.hex"]
+        params = []
+        
+        # Add bbox condition if provided
+        if bbox:
+            try:
+                min_lon, min_lat, max_lon, max_lat = map(float, bbox.split(','))
+                lateral_conditions.append("ST_Intersects(geom, ST_MakeEnvelope(%s, %s, %s, %s, 4326))")
+                params.extend([min_lon, min_lat, max_lon, max_lat])
+            except ValueError:
+                logger.error(f"Invalid bbox format from {email}: {bbox}")
+                return jsonify({"error": "Invalid bbox format. Expected format: min_lon,min_lat,max_lon,max_lat"}), 400
+        
+        # Add optional time constraints
+        if start_time:
+            lateral_conditions.append("t >= %s")
+            params.append(datetime.fromisoformat(start_time.replace('Z', '+00:00')))
+        
+        if end_time:
+            lateral_conditions.append("t <= %s")
+            params.append(datetime.fromisoformat(end_time.replace('Z', '+00:00')))
+        
+        # Add optional altitude constraints
+        if min_alt:
+            lateral_conditions.append("alt >= %s")
+            params.append(int(min_alt))
+        
+        if max_alt:
+            lateral_conditions.append("alt <= %s")
+            params.append(int(max_alt))
+        
+        # Add optional bearing constraints
+        if min_bearing and max_bearing:
+            min_b = float(min_bearing)
+            max_b = float(max_bearing)
+            
+            if min_b <= max_b:
+                lateral_conditions.append("bearing BETWEEN %s AND %s")
+                params.extend([min_b, max_b])
+            else:
+                lateral_conditions.append("(bearing >= %s OR bearing <= %s)")
+                params.extend([min_b, max_b])
+        elif min_bearing:
+            lateral_conditions.append("bearing >= %s")
+            params.append(float(min_bearing))
+        elif max_bearing:
+            lateral_conditions.append("bearing <= %s")
+            params.append(float(max_bearing))
+
+        # Add optional speed constraints
+        if min_speed:
+            lateral_conditions.append("gs >= %s")
+            params.append(float(min_speed))
+        if max_speed:
+            lateral_conditions.append("gs <= %s")
+            params.append(float(max_speed))
+        
+        # Add military filter if provided
+        if military is not None:
+            if military.lower() == 'true':
+                lateral_conditions.append("adsb.military = true")
+            elif military.lower() == 'false':
+                lateral_conditions.append("adsb.military = false")
+        
+        # Add category filter if provided
+        if category:
+            lateral_conditions.append("adsb.category = %s")
+            params.append(category)
+        
+        # Add typecode filter if provided
+        if typecode:
+            lateral_conditions.append("adsb.typecode = %s")
+            params.append(typecode)
+        
+        # Add flight code filter if provided
+        if flight_code:
+            lateral_conditions.append("TRIM(flight) = %s")
+            params.append(flight_code)
+        
+        # Log performance warning for large categories
+        has_constraints = bool(start_time or end_time or min_alt or max_alt or min_bearing or max_bearing or min_speed or max_speed)
+        log_performance_warning(email, category, has_constraints)
+        
+        # Build the optimized query using unnest with CROSS JOIN LATERAL
+        # This pattern allows PostgreSQL to efficiently use the hex index for each code
+        lateral_where = " AND ".join(lateral_conditions)
+        
+        # Calculate per-hex limit to ensure we get enough results
+        # Use the total limit, capped reasonably per hex code
+        per_hex_limit = max(limit, 100000)
+        
+        base_query = f"""
+            SELECT 
+                fa.t,
+                fa.hex,
+                fa.flight,
+                fa.alt,
+                fa.gs,
+                ST_X(fa.geom) AS lon,
+                ST_Y(fa.geom) AS lat,
+                fa.bearing,
+                fa.registration,
+                fa.typecode,
+                fa.category,
+                fa.military,
+                m.owner,
+                m.aircraft
+            FROM unnest(%s::text[]) AS h(hex)
+            CROSS JOIN LATERAL (
+                SELECT * FROM adsb
+                WHERE {lateral_where}
+                ORDER BY t DESC
+                LIMIT {per_hex_limit}
+            ) fa
+            LEFT JOIN modes m ON fa.hex = m.hex
+            ORDER BY fa.t DESC
+            LIMIT %s OFFSET %s
+        """
+        
+        # Insert hex_codes array at the beginning of params
+        params.insert(0, hex_codes)
+        params.extend([limit, offset])
+        
+        # Log the final query with parameters
+        logger.debug(f"SQL Query from {email}: {base_query}")
+        logger.debug(f"Query Parameters from {email}: {params}")
+        
+        # Execute query
+        conn = get_db_connection()
+        with conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(base_query, params)
+                results = cur.fetchall()
+                
+                # Log the number of results
+                logger.info(f"Query from {email} returned {len(results)} results")
+                
+                # Convert results to list of dictionaries and fix timestamp format
+                formatted_results = []
+                for row in results:
+                    row['t'] = row['t'].isoformat()
+                    formatted_results.append(dict(row))
+        
+        # Return results
+        response = {
+            "count": len(formatted_results),
+            "results": formatted_results
+        }
+        
+        return jsonify(response)
+    
+    except Exception as e:
+        logger.error(f"Error in /api/adsb/hex_list from {email}: {str(e)}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
 
 @app.route('/api/adsb/intersect_bboxes', methods=['GET'])
 @require_firebase_auth
