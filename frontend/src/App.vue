@@ -27,7 +27,7 @@ onMounted(() => {
 
 <template>
   <v-layout>
-    <v-app-bar title="ADS-B History Search">
+    <v-app-bar title="Turnstone: ADS-B History Search">
       <template v-slot:append>
         <Auth />
       </template>

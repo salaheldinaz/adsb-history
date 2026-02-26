@@ -30,6 +30,8 @@ const handleSearch = async () => {
             { title: '1,000 results', value: 1000 },
             { title: '10,000 results', value: 10000 },
             { title: '100,000 results', value: 100000 },
+            { title: '200,000 results', value: 200000 },
+            { title: '500,000 results', value: 500000 },
             { title: '1,000,000 results', value: 1000000 }
           ]"
           label="Result Limit"
