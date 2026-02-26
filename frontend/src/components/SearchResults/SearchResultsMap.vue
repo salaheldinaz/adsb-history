@@ -10,6 +10,7 @@ import {
   MglNavigationControl,
   MglGeoJsonSource,
   MglSymbolLayer,
+  MglCircleLayer,
   MglFillLayer,
 } from 'vue-maplibre-gl';
 
@@ -17,6 +18,29 @@ const queryStore = useQueryStore();
 const uiStore = useUiStore();
 const { filteredSearchResults, boundingBoxes } = storeToRefs(queryStore);
 const { hoveredAircraft } = storeToRefs(uiStore);
+
+// Color mode: 'altitude', 'day', 'aircraft', or 'aircraftType'
+const colorMode = ref('altitude');
+
+// Maximum number of points to render on the map (sampling applied above this)
+const MAX_MAP_POINTS = 200000;
+
+// Threshold for switching to performance mode (circles instead of plane icons)
+const PERFORMANCE_MODE_THRESHOLD = 50000;
+
+// Threshold for disabling hover effects (too many points to track)
+const HOVER_DISABLED_THRESHOLD = 10000;
+
+// Computed to determine if we should use performance mode
+const usePerformanceMode = computed(() => {
+  if (!filteredSearchResults.value || !filteredSearchResults.value.results) {
+    return false;
+  }
+  return filteredSearchResults.value.results.length > PERFORMANCE_MODE_THRESHOLD;
+});
+
+// Option to fit altitude range to data bounds
+const fitAltitudeToData = ref(false);
 
 // Map options
 const mapOptions = {
@@ -41,14 +65,13 @@ const mapOptions = {
       }
     ]
   },
-  center: [-122.4194, 37.7749], 
+  center: [-122.4194, 37.7749],
   zoom: 10,
   attributionControl: true,
 };
 
 // Function to interpolate between two colors
 const interpolateColor = (color1, color2, factor) => {
-  // Convert hex to RGB
   const r1 = parseInt(color1.substring(1, 3), 16);
   const g1 = parseInt(color1.substring(3, 5), 16);
   const b1 = parseInt(color1.substring(5, 7), 16);
@@ -57,44 +80,305 @@ const interpolateColor = (color1, color2, factor) => {
   const g2 = parseInt(color2.substring(3, 5), 16);
   const b2 = parseInt(color2.substring(5, 7), 16);
 
-  // Interpolate
   const r = Math.round(r1 + (r2 - r1) * factor);
   const g = Math.round(g1 + (g2 - g1) * factor);
   const b = Math.round(b1 + (b2 - b1) * factor);
 
-  // Convert back to hex
   return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
 };
 
+// Calculate min and max altitude from data
+const altitudeBounds = computed(() => {
+  if (
+    !filteredSearchResults.value ||
+    !filteredSearchResults.value.results ||
+    filteredSearchResults.value.results.length === 0
+  ) {
+    return { min: 0, max: 40000 };
+  }
+
+  let minAlt = Infinity;
+  let maxAlt = -Infinity;
+
+  filteredSearchResults.value.results.forEach((result) => {
+    if (result.alt !== null && result.alt !== undefined && result.alt !== -123) {
+      if (result.alt < minAlt) minAlt = result.alt;
+      if (result.alt > maxAlt) maxAlt = result.alt;
+    }
+  });
+
+  if (minAlt === Infinity || maxAlt === -Infinity) {
+    return { min: 0, max: 40000 };
+  }
+
+  minAlt = Math.max(0, minAlt);
+
+  return { min: minAlt, max: maxAlt };
+});
+
 // Function to get color based on altitude using continuous scale
 const getColorByAltitude = (altitude) => {
-  // Define color stops for altitude ranges
-  const colorStops = [
-    { altitude: 0, color: '#1a9850' }, // Green for low altitude
-    { altitude: 5000, color: '#d9ef8b' }, // Yellow-green
-    { altitude: 10000, color: '#fee08b' }, // Light yellow
-    { altitude: 20000, color: '#fc8d59' }, // Orange
-    { altitude: 30000, color: '#d73027' }, // Red
-    { altitude: 40000, color: '#b2182b' }, // Dark red for very high altitude
-  ];
+  if (altitude === null || altitude === undefined || altitude === -123) {
+    return '#1a9850';
+  }
 
-  // Find the appropriate color range
+  let colorStops;
+
+  if (fitAltitudeToData.value) {
+    const bounds = altitudeBounds.value;
+    const range = bounds.max - bounds.min;
+
+    const baseStops = [
+      { factor: 0, color: '#1a9850' },
+      { factor: 0.2, color: '#d9ef8b' },
+      { factor: 0.4, color: '#fee08b' },
+      { factor: 0.6, color: '#fc8d59' },
+      { factor: 0.8, color: '#d73027' },
+      { factor: 1.0, color: '#b2182b' },
+    ];
+
+    colorStops = baseStops.map(stop => ({
+      altitude: bounds.min + (range * stop.factor),
+      color: stop.color
+    }));
+  } else {
+    colorStops = [
+      { altitude: 0, color: '#1a9850' },
+      { altitude: 5000, color: '#d9ef8b' },
+      { altitude: 10000, color: '#fee08b' },
+      { altitude: 20000, color: '#fc8d59' },
+      { altitude: 30000, color: '#d73027' },
+      { altitude: 40000, color: '#b2182b' },
+    ];
+  }
+
+  const clampedAltitude = Math.max(colorStops[0].altitude, Math.min(altitude, colorStops[colorStops.length - 1].altitude));
+
   for (let i = 0; i < colorStops.length - 1; i++) {
-    if (altitude < colorStops[i + 1].altitude) {
+    if (clampedAltitude <= colorStops[i + 1].altitude) {
       const lowerStop = colorStops[i];
       const upperStop = colorStops[i + 1];
-
-      // Calculate interpolation factor
-      const factor = (altitude - lowerStop.altitude) / (upperStop.altitude - lowerStop.altitude);
-
-      // Interpolate between the two colors
+      const factor = (clampedAltitude - lowerStop.altitude) / (upperStop.altitude - lowerStop.altitude);
       return interpolateColor(lowerStop.color, upperStop.color, factor);
     }
   }
 
-  // If altitude is higher than the highest stop, return the highest color
   return colorStops[colorStops.length - 1].color;
 };
+
+// Get altitude legend labels and positions
+const altitudeLegendLabels = computed(() => {
+  if (!fitAltitudeToData.value) {
+    return [
+      { value: 0, position: 0 },
+      { value: 10000, position: 25 },
+      { value: 20000, position: 50 },
+      { value: 30000, position: 75 },
+      { value: 40000, position: 100, suffix: '+' },
+    ];
+  } else {
+    const bounds = altitudeBounds.value;
+    const range = bounds.max - bounds.min;
+    return [
+      { value: bounds.min, position: 0 },
+      { value: bounds.min + range * 0.2, position: 20 },
+      { value: bounds.min + range * 0.4, position: 40 },
+      { value: bounds.min + range * 0.6, position: 60 },
+      { value: bounds.min + range * 0.8, position: 80 },
+      { value: bounds.max, position: 100 },
+    ];
+  }
+});
+
+// Get gradient CSS that matches the actual color stops
+const altitudeGradientStyle = computed(() => {
+  if (!fitAltitudeToData.value) {
+    return {
+      height: '20px',
+      width: '100%',
+      background: 'linear-gradient(to right, #1a9850 0%, #d9ef8b 12.5%, #fee08b 25%, #fc8d59 50%, #d73027 75%, #b2182b 100%)'
+    };
+  } else {
+    return {
+      height: '20px',
+      width: '100%',
+      background: 'linear-gradient(to right, #1a9850 0%, #d9ef8b 20%, #fee08b 40%, #fc8d59 60%, #d73027 80%, #b2182b 100%)'
+    };
+  }
+});
+
+// Color palette for days (distinct colors)
+const dayColorPalette = [
+  '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
+  '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf',
+  '#aec7e8', '#ffbb78', '#98df8a', '#ff9896', '#c5b0d5',
+  '#c49c94', '#f7b6d3', '#c7c7c7', '#dbdb8d', '#9edae5',
+  '#393b79', '#637939', '#8c6d31', '#843c39', '#7b4173',
+  '#5254a3', '#6b6ecf', '#9c9ede', '#b5cf6b', '#cedb9c',
+];
+
+// Get unique days from search results and assign colors
+const dayColorMap = computed(() => {
+  if (
+    !filteredSearchResults.value ||
+    !filteredSearchResults.value.results ||
+    filteredSearchResults.value.results.length === 0
+  ) {
+    return new Map();
+  }
+
+  const days = new Set();
+  filteredSearchResults.value.results.forEach((result) => {
+    if (result.t) {
+      const day = new Date(result.t).toDateString();
+      days.add(day);
+    }
+  });
+
+  const sortedDays = Array.from(days).sort((a, b) => {
+    return new Date(a).getTime() - new Date(b).getTime();
+  });
+  const colorMap = new Map();
+  sortedDays.forEach((day, index) => {
+    colorMap.set(day, dayColorPalette[index % dayColorPalette.length]);
+  });
+
+  return colorMap;
+});
+
+// Get sorted unique days for legend
+const uniqueDays = computed(() => {
+  if (
+    !filteredSearchResults.value ||
+    !filteredSearchResults.value.results ||
+    filteredSearchResults.value.results.length === 0
+  ) {
+    return [];
+  }
+
+  const days = new Set();
+  filteredSearchResults.value.results.forEach((result) => {
+    if (result.t) {
+      const day = new Date(result.t).toDateString();
+      days.add(day);
+    }
+  });
+
+  return Array.from(days).sort((a, b) => {
+    return new Date(a).getTime() - new Date(b).getTime();
+  });
+});
+
+const getColorByDay = (dateString) => {
+  if (!dateString) return '#000000';
+  const day = new Date(dateString).toDateString();
+  return dayColorMap.value.get(day) || '#000000';
+};
+
+const getDayColor = (day) => {
+  return dayColorMap.value.get(day) || '#000000';
+};
+
+// Helper function to get consistent color for aircraft hex code using hash
+function getConsistentColor(hex) {
+  if (!hex) return '#000000';
+
+  const baseColors = [
+    '#26DE81', '#B33771', '#FF4757', '#0652DD', '#F39C12',
+    '#70A1FF', '#E84393', '#00D8D6', '#C0392B', '#A742FA',
+    '#FD7E14', '#1ABC9C', '#6C5CE7', '#FF9F43', '#009432',
+    '#74B9FF', '#D63384', '#EE5A24', '#3498DB', '#A55EEA',
+    '#CD6133', '#2980B9', '#FF6B35', '#20C997', '#6F42C1',
+    '#FFDA79', '#833471', '#0D6EFD', '#E67E22', '#1DD1A1',
+    '#FC427B', '#40407A', '#F1C40F', '#00A8CC', '#DC3545',
+    '#A5B1C2', '#3742FA', '#218C74', '#FFA502', '#8E44AD',
+    '#FF5E5B', '#006BA6', '#2ED573', '#10AC84', '#6610F2',
+    '#FDCB6E', '#7158E2', '#0ABDE3', '#C44569', '#27AE60',
+    '#FF3838', '#5758BB', '#16A085', '#FEA47F', '#9B59B6',
+    '#F8B500', '#00CEC9', '#D35400', '#1289A7', '#FFDD59',
+    '#006266', '#4834D4', '#00D2D3', '#E74C3C', '#198754',
+    '#FD79A8', '#00B894', '#FF6348'
+  ];
+
+  let hash = 5381;
+  for (let i = hex.length - 1; i >= 0; i--) {
+    const char = hex.charCodeAt(i);
+    hash = ((hash << 5) + hash) + char;
+  }
+
+  hash = Math.abs(hash);
+
+  return baseColors[hash % baseColors.length];
+}
+
+// Get unique aircraft with their info for legend
+const uniqueAircraft = computed(() => {
+  if (
+    !filteredSearchResults.value ||
+    !filteredSearchResults.value.results ||
+    filteredSearchResults.value.results.length === 0
+  ) {
+    return [];
+  }
+
+  const aircraftMap = new Map();
+  filteredSearchResults.value.results.forEach((result) => {
+    if (result.hex && !aircraftMap.has(result.hex)) {
+      aircraftMap.set(result.hex, {
+        hex: result.hex,
+        typecode: result.typecode || '-',
+      });
+    }
+  });
+
+  return Array.from(aircraftMap.values()).sort((a, b) =>
+    a.hex.localeCompare(b.hex)
+  );
+});
+
+const getColorByAircraft = (hex) => {
+  return getConsistentColor(hex);
+};
+
+const getAircraftColor = (hex) => {
+  return getConsistentColor(hex);
+};
+
+const getColorByAircraftType = (typecode) => {
+  const type = typecode || '-';
+  return getConsistentColor(type);
+};
+
+const getAircraftTypeColor = (typecode) => {
+  return getColorByAircraftType(typecode);
+};
+
+// Get unique aircraft types for legend
+const uniqueAircraftTypes = computed(() => {
+  if (
+    !filteredSearchResults.value ||
+    !filteredSearchResults.value.results ||
+    filteredSearchResults.value.results.length === 0
+  ) {
+    return [];
+  }
+
+  const typeSet = new Set();
+  filteredSearchResults.value.results.forEach((result) => {
+    const typecode = result.typecode || '-';
+    typeSet.add(typecode);
+  });
+
+  return Array.from(typeSet).sort();
+});
+
+// Track if we're sampling data for UI feedback
+const isSampled = computed(() => {
+  if (!filteredSearchResults.value || !filteredSearchResults.value.results) {
+    return false;
+  }
+  return filteredSearchResults.value.results.length > MAX_MAP_POINTS;
+});
 
 // Convert search results to GeoJSON features
 const mapFeatures = computed(() => {
@@ -109,7 +393,24 @@ const mapFeatures = computed(() => {
     };
   }
 
-  const features = filteredSearchResults.value.results.map((result) => ({
+  const allResults = filteredSearchResults.value.results;
+  const resultsCount = allResults.length;
+
+  let resultsToRender;
+  if (resultsCount > MAX_MAP_POINTS) {
+    const sampleRate = Math.ceil(resultsCount / MAX_MAP_POINTS);
+    resultsToRender = [];
+    for (let i = 0; i < resultsCount; i += sampleRate) {
+      resultsToRender.push(allResults[i]);
+    }
+  } else {
+    resultsToRender = allResults;
+  }
+
+  const hoverEnabled = resultsCount <= HOVER_DISABLED_THRESHOLD;
+  const currentHoveredHex = hoverEnabled ? hoveredAircraft.value : null;
+
+  const features = resultsToRender.map((result) => ({
     type: 'Feature',
     geometry: {
       type: 'Point',
@@ -122,8 +423,15 @@ const mapFeatures = computed(() => {
       gs: result.gs,
       bearing: (result.bearing * 360) / (Math.PI * 2) - 90,
       t: result.t.replace('T', '\n').slice(0, 16),
-      color: getColorByAltitude(result.alt),
-      isHovered: hoveredAircraft.value === result.hex,
+      typecode: result.typecode || '-',
+      color: colorMode.value === 'day'
+        ? getColorByDay(result.t)
+        : colorMode.value === 'aircraft'
+        ? getColorByAircraft(result.hex)
+        : colorMode.value === 'aircraftType'
+        ? getColorByAircraftType(result.typecode)
+        : getColorByAltitude(result.alt),
+      isHovered: currentHoveredHex === result.hex,
     },
   }));
 
@@ -167,17 +475,14 @@ const boundingBoxesGeoJSON = computed(() => {
 
 // Add plane icon to the map
 const addPlaneIcon = (mapWrapper) => {
-  // In vue-maplibre-gl, the actual map object is in the 'map' property
   const map = mapWrapper.map;
 
-  // Load the plane icon image
   map.loadImage('/plane.png', (error, image) => {
     if (error) {
       console.error('Error loading plane icon:', error);
       return;
     }
 
-    // Add the image to the map
     if (!map.hasImage('plane-icon')) {
       map.addImage('plane-icon', image, { sdf: true });
     }
@@ -186,7 +491,6 @@ const addPlaneIcon = (mapWrapper) => {
 
 // Fit map to bounds when results change
 const fitMapToBounds = (mapWrapper) => {
-  // In vue-maplibre-gl, the actual map object is in the 'map' property
   const map = mapWrapper.map;
 
   if (mapFeatures.value.features.length > 0) {
@@ -200,16 +504,11 @@ const fitMapToBounds = (mapWrapper) => {
 
 // Handle map load event
 const onMapLoad = (mapWrapper) => {
-  // Add the plane icon
   addPlaneIcon(mapWrapper);
-  
-  // Fit the map to the bounds
   fitMapToBounds(mapWrapper);
 
-  // Store map reference for later use
   mapRef.value = mapWrapper.map;
-  
-  // Initial setup of hover events based on current number of points
+
   updateHoverEvents();
 };
 
@@ -218,18 +517,14 @@ const mapRef = ref(null);
 
 // Function to update hover events based on number of points
 const updateHoverEvents = () => {
-  console.log('updateHoverEvents', mapFeatures.value.features.length);
   if (!mapRef.value) return;
 
-  // Remove existing hover events
   mapRef.value.off('mouseenter', 'search-results-points');
   mapRef.value.off('mouseleave', 'search-results-points');
   mapRef.value.getCanvas().style.cursor = '';
   uiStore.setHoveredAircraft(null);
 
-  // Only add hover events if there are 10,000 or fewer points
-  if (mapFeatures.value.features.length <= 10000) {
-    // Add hover events
+  if (mapFeatures.value.features.length <= HOVER_DISABLED_THRESHOLD) {
     mapRef.value.on('mouseenter', 'search-results-points', (e) => {
       if (e.features && e.features[0]) {
         const hex = e.features[0].properties.hex;
@@ -241,7 +536,6 @@ const updateHoverEvents = () => {
       uiStore.setHoveredAircraft(null);
     });
 
-    // Change cursor on hover
     mapRef.value.on('mouseenter', 'search-results-points', () => {
       mapRef.value.getCanvas().style.cursor = 'pointer';
     });
@@ -252,7 +546,6 @@ const updateHoverEvents = () => {
   }
 };
 
-// Watch for changes in the number of points
 watch(() => mapFeatures.value.features.length, () => {
   updateHoverEvents();
 });
@@ -296,11 +589,49 @@ const roiPaint = {
   'fill-outline-color': '#000',
   'fill-antialias': true,
 };
+
+// Circle layer paint for performance mode (large datasets)
+const circlePaint = {
+  'circle-radius': 3,
+  'circle-color': ['get', 'color'],
+  'circle-stroke-color': '#000000',
+  'circle-stroke-width': 0.5,
+  'circle-opacity': 0.8,
+};
 </script>
 
 <template>
   <v-card class="mb-4">
-    <v-card-title>Results Map</v-card-title>
+    <v-card-title class="d-flex justify-space-between align-center">
+      <span>
+        Results Map
+        <v-chip v-if="isSampled" size="x-small" color="warning" class="ml-2">
+          Showing ~{{ MAX_MAP_POINTS.toLocaleString() }} of {{ filteredSearchResults?.count?.toLocaleString() }} points
+        </v-chip>
+        <v-chip v-else-if="usePerformanceMode" size="x-small" color="info" class="ml-2">
+          {{ filteredSearchResults?.count?.toLocaleString() }} points
+        </v-chip>
+      </span>
+      <v-btn-toggle
+        v-model="colorMode"
+        mandatory
+        density="compact"
+        variant="outlined"
+      >
+        <v-btn value="altitude" size="small">
+          Color by Altitude
+        </v-btn>
+        <v-btn value="day" size="small">
+          Color by Day
+        </v-btn>
+        <v-btn value="aircraft" size="small">
+          Color by Aircraft
+        </v-btn>
+        <v-btn value="aircraftType" size="small">
+          Color by Type
+        </v-btn>
+      </v-btn-toggle>
+    </v-card-title>
     <v-card-text>
       <div v-if="filteredSearchResults && filteredSearchResults.results && filteredSearchResults.results.length > 0">
         <MglMap :map-style="mapOptions.style" style="height: 500px; width: 100%" @map:load="onMapLoad">
@@ -311,49 +642,121 @@ const roiPaint = {
             <MglFillLayer layerId="bounding-boxes-fill" :paint="roiPaint" />
           </MglGeoJsonSource>
 
-          <!-- GeoJSON Source with nested Symbol Layer -->
+          <!-- GeoJSON Source with nested Symbol Layer or Circle Layer (performance mode) -->
           <MglGeoJsonSource sourceId="search-results" :data="mapFeatures">
-            <!-- Symbol Layer with plane icon -->
-            <MglSymbolLayer
+            <!-- Circle Layer for performance mode (large datasets) -->
+            <MglCircleLayer
+              v-if="usePerformanceMode"
               layerId="search-results-points"
-              :layout="planeLayout"
-              :paint="planePaint"
+              :paint="circlePaint"
             />
-            <!-- Label Layer for hex codes -->
-            <MglSymbolLayer
-              layerId="search-results-labels"
-              :layout="labelLayout"
-              :paint="labelPaint"
-            />
+            <!-- Symbol Layer with plane icon (normal mode) -->
+            <template v-else>
+              <MglSymbolLayer
+                layerId="search-results-points"
+                :layout="planeLayout"
+                :paint="planePaint"
+              />
+              <!-- Label Layer for hex codes -->
+              <MglSymbolLayer
+                layerId="search-results-labels"
+                :layout="labelLayout"
+                :paint="labelPaint"
+              />
+            </template>
           </MglGeoJsonSource>
         </MglMap>
-        
+
         <!-- Altitude Legend -->
-        <div class="mt-2">
+        <div v-if="colorMode === 'altitude'" class="mt-2">
           <div class="d-flex align-center mb-2">
             <span class="mr-2">Altitude:</span>
-            <div
-              class="color-gradient"
-              style="
-                height: 20px;
-                flex-grow: 1;
-                background: linear-gradient(
-                  to right,
-                  #1a9850,
-                  #fee08b,
-                  #fc8d59,
-                  #d73027,
-                  #b2182b
-                );
-              "
-            ></div>
+            <v-checkbox
+              v-model="fitAltitudeToData"
+              label="Fit to data range"
+              density="compact"
+              hide-details
+              class="mr-2"
+              style="flex-shrink: 0;"
+            ></v-checkbox>
+            <div class="legend-container" style="flex-grow: 1; position: relative;">
+              <div
+                class="color-gradient"
+                :style="altitudeGradientStyle"
+              ></div>
+              <div class="legend-labels">
+                <span
+                  v-for="(label, index) in altitudeLegendLabels"
+                  :key="index"
+                  :style="{
+                    left: label.position + '%',
+                    transform: index === 0 ? 'translateX(0)' : index === altitudeLegendLabels.length - 1 ? 'translateX(-100%)' : 'translateX(-50%)'
+                  }"
+                >
+                  {{ Math.round(label.value).toLocaleString() }}{{ label.suffix || '' }} ft
+                </span>
+              </div>
+            </div>
           </div>
-          <div class="d-flex justify-space-between">
-            <span style="margin-left: 64px;">0 ft</span>
-            <span>10,000 ft</span>
-            <span>20,000 ft</span>
-            <span>30,000 ft</span>
-            <span>40,000+ ft</span>
+        </div>
+
+        <!-- Day Legend -->
+        <div v-if="colorMode === 'day'" class="mt-2">
+          <div class="mb-2">
+            <span class="mr-2">Day:</span>
+          </div>
+          <div class="d-flex flex-wrap gap-2">
+            <div
+              v-for="day in uniqueDays"
+              :key="day"
+              class="d-flex align-center mr-3 mb-1"
+            >
+              <div
+                class="day-color-box mr-1"
+                :style="{ backgroundColor: getDayColor(day) }"
+              ></div>
+              <span style="font-size: 12px;">{{ day }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Aircraft Legend -->
+        <div v-if="colorMode === 'aircraft'" class="mt-2">
+          <div class="mb-2">
+            <span class="mr-2">Aircraft:</span>
+          </div>
+          <div class="d-flex flex-wrap gap-2" style="max-height: 200px; overflow-y: auto;">
+            <div
+              v-for="aircraft in uniqueAircraft"
+              :key="aircraft.hex"
+              class="d-flex align-center mr-3 mb-1"
+            >
+              <div
+                class="day-color-box mr-1"
+                :style="{ backgroundColor: getAircraftColor(aircraft.hex) }"
+              ></div>
+              <span style="font-size: 12px;">{{ aircraft.hex }} ({{ aircraft.typecode }})</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Aircraft Type Legend -->
+        <div v-if="colorMode === 'aircraftType'" class="mt-2">
+          <div class="mb-2">
+            <span class="mr-2">Aircraft Type:</span>
+          </div>
+          <div class="d-flex flex-wrap gap-2" style="max-height: 200px; overflow-y: auto;">
+            <div
+              v-for="typecode in uniqueAircraftTypes"
+              :key="typecode"
+              class="d-flex align-center mr-3 mb-1"
+            >
+              <div
+                class="day-color-box mr-1"
+                :style="{ backgroundColor: getAircraftTypeColor(typecode) }"
+              ></div>
+              <span style="font-size: 12px;">{{ typecode }}</span>
+            </div>
           </div>
         </div>
       </div>
@@ -368,5 +771,29 @@ const roiPaint = {
 .color-gradient {
   border: 1px solid #ccc;
   border-radius: 4px;
+}
+
+.day-color-box {
+  width: 16px;
+  height: 16px;
+  border: 1px solid #ccc;
+  border-radius: 3px;
+  display: inline-block;
+}
+
+.legend-container {
+  position: relative;
+}
+
+.legend-labels {
+  position: relative;
+  width: 100%;
+  margin-top: 4px;
+}
+
+.legend-labels span {
+  position: absolute;
+  font-size: 12px;
+  white-space: nowrap;
 }
 </style>
