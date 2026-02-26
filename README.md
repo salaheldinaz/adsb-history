@@ -317,7 +317,3 @@ The tar1090 project distributes an [aircraft database](https://github.com/wiedeh
 This is augmented by adding ownership information queried from [hexdb.io](https://hexdb.io/). In order to allow searching by natural aircraft type categories (e.g. "business jet" vs. "airliner"), this dataset was further augmented using a large language model (Anthropic Claude 4.0 Sonnet) which takes the aircraft type and typecode as an input (e.g. "B772 BOEING 777-200"), and returns a category ("airliner") and a military true/false value (false). The large language model is only used to produce the category and military values. All other search query values in Turnstone are directly from ADS-B data or tar1090-db.
 
 The augmented file is distributed in `/backend-data-loading/modes.csv`. For more information about this data augmentation process, including the full large language model prompt, see the Jupyter notebook in `/backend-data-loading/augment-aircraft.ipynb`.
-
-## License
-
-This project is distributed under the MIT License in `LICENSE`, with the exception of the file modes.csv, which is distributed under the GNU General Purpose License, in `LICENSE-modes`.
