@@ -33,19 +33,52 @@ const clearEndTime = () => {
   endTime.value = null;
 };
 
+// Normalize date to YYYY-MM-DD string format
+const normalizeDate = (date) => {
+  if (!date) return null;
+  
+  // If it's already a string in YYYY-MM-DD format, return it
+  if (typeof date === 'string' && date.match(/^\d{4}-\d{2}-\d{2}/)) {
+    return date;
+  }
+  
+  // If it's a Date object, convert to YYYY-MM-DD in UTC
+  if (date instanceof Date) {
+    const year = date.getUTCFullYear();
+    const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(date.getUTCDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+  
+  return null;
+};
+
 // Function to format date/time for store
 const formatDateTime = (dateStr, timeStr) => {
-  if (!dateStr) return null;
+  const normalizedDate = normalizeDate(dateStr);
+  if (!normalizedDate) return null;
   
   // Create date string in YYYY-MM-DDTHH:mm format
   const timeString = timeStr || '00:00';
-  return `${dateStr}T${timeString}`;
+  return `${normalizedDate}T${timeString}`;
 };
 
 // Watch for changes and update the store
 watch([startDate, endDate, startTime, endTime], () => {
-  const formattedStart = formatDateTime(startDate.value, startTime.value);
-  const formattedEnd = formatDateTime(endDate.value, endTime.value);
+  // Normalize dates to strings before formatting
+  const normalizedStartDate = normalizeDate(startDate.value);
+  const normalizedEndDate = normalizeDate(endDate.value);
+  
+  // Update refs if they were Date objects
+  if (startDate.value instanceof Date && normalizedStartDate) {
+    startDate.value = normalizedStartDate;
+  }
+  if (endDate.value instanceof Date && normalizedEndDate) {
+    endDate.value = normalizedEndDate;
+  }
+  
+  const formattedStart = formatDateTime(normalizedStartDate, startTime.value);
+  const formattedEnd = formatDateTime(normalizedEndDate, endTime.value);
   
   // Only update if values are different to prevent recursive updates
   if (formattedStart !== storeStartDate.value || formattedEnd !== storeEndDate.value) {
@@ -81,8 +114,25 @@ watch([storeStartDate, storeEndDate], ([newStoreStart, newStoreEnd]) => {
 
 // Format date for display
 const formatDate = (date) => {
-  console.log(date);
-  return date ? new Date(date).toLocaleDateString() : '';
+  if (!date) return '';
+  
+  // Handle Date object from picker - convert to YYYY-MM-DD string in UTC
+  if (date instanceof Date) {
+    const year = date.getUTCFullYear();
+    const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(date.getUTCDate()).padStart(2, '0');
+    const dateStr = `${year}-${month}-${day}`;
+    // Format for display: MM/DD/YYYY
+    return `${month}/${day}/${year}`;
+  }
+  
+  // Handle string format (YYYY-MM-DD)
+  if (typeof date === 'string' && date.match(/^\d{4}-\d{2}-\d{2}/)) {
+    const [year, month, day] = date.split('-');
+    return `${month}/${day}/${year}`;
+  }
+  
+  return '';
 };
 
 // Format time for display
