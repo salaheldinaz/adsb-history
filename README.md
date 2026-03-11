@@ -191,7 +191,7 @@ python process_adsb_data.py /path/to/data/directory
 # --verbose: Enable verbose logging
 ```
 
-Data can be downloaded from [adsb.lol's data releases](https://github.com/adsblol/globe_history_2026/releases).
+Data can be downloaded from [adsb.lol's data releases](https://github.com/adsblol/globe_history/releases).
 
 For example, data for October 28th, 2025, once downloaded from Github and extracted, can be imported into the database as follows:
 
