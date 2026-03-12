@@ -31,6 +31,18 @@ const PERFORMANCE_MODE_THRESHOLD = 50000;
 // Threshold for disabling hover effects (too many points to track)
 const HOVER_DISABLED_THRESHOLD = 10000;
 
+// Category to icon id (slug). Must match icon filenames in /icons/plane-{slug}.png
+const CATEGORY_SLUGS = [
+  'airliner', 'business-jet', 'helicopter', 'general-aviation', 'uav', 'transport',
+  'fighter', 'bomber', 'trainer', 'tanker', 'reconnaissance', 'liaison', 'maritime-patrol',
+  'electronic-warfare', 'glider', 'balloon', 'amphibian', 'torpedo-bomber', 'gyrocopter', 'airship'
+];
+const categoryToIconId = (category) => {
+  if (!category || typeof category !== 'string') return 'plane-icon';
+  const slug = category.toLowerCase().trim().replace(/\s+/g, '-');
+  return CATEGORY_SLUGS.includes(slug) ? `plane-icon-${slug}` : 'plane-icon';
+};
+
 // Computed to determine if we should use performance mode
 const usePerformanceMode = computed(() => {
   if (!filteredSearchResults.value || !filteredSearchResults.value.results) {
@@ -424,6 +436,7 @@ const mapFeatures = computed(() => {
       bearing: (result.bearing * 360) / (Math.PI * 2) - 90,
       t: result.t.replace('T', '\n').slice(0, 16),
       typecode: result.typecode || '-',
+      iconImage: categoryToIconId(result.category),
       color: colorMode.value === 'day'
         ? getColorByDay(result.t)
         : colorMode.value === 'aircraft'
@@ -473,20 +486,33 @@ const boundingBoxesGeoJSON = computed(() => {
   };
 });
 
-// Add plane icon to the map
-const addPlaneIcon = (mapWrapper) => {
+// Add plane icons (default + per-category) to the map
+const addPlaneIcons = (mapWrapper) => {
   const map = mapWrapper.map;
 
-  map.loadImage('/plane.png', (error, image) => {
-    if (error) {
-      console.error('Error loading plane icon:', error);
-      return;
-    }
+  const loadImage = (url) =>
+    new Promise((resolve, reject) => {
+      map.loadImage(url, (err, image) => (err ? reject(err) : resolve(image)));
+    });
 
-    if (!map.hasImage('plane-icon')) {
-      map.addImage('plane-icon', image, { sdf: true });
+  const addImage = (id, image) => {
+    if (!map.hasImage(id)) {
+      map.addImage(id, image, { sdf: true });
     }
-  });
+  };
+
+  loadImage('/plane.png')
+    .then((image) => {
+      addImage('plane-icon', image);
+      return Promise.all(
+        CATEGORY_SLUGS.map((slug) =>
+          loadImage(`/icons/plane-${slug}.png`)
+            .then((img) => addImage(`plane-icon-${slug}`, img))
+            .catch(() => { /* missing icon falls back to plane-icon via coalesce */ })
+        )
+      );
+    })
+    .catch((err) => console.error('Error loading plane icon:', err));
 };
 
 // Fit map to bounds when results change
@@ -504,7 +530,7 @@ const fitMapToBounds = (mapWrapper) => {
 
 // Handle map load event
 const onMapLoad = (mapWrapper) => {
-  addPlaneIcon(mapWrapper);
+  addPlaneIcons(mapWrapper);
   fitMapToBounds(mapWrapper);
 
   mapRef.value = mapWrapper.map;
@@ -558,7 +584,7 @@ const planePaint = {
 };
 
 const planeLayout = {
-  'icon-image': 'plane-icon',
+  'icon-image': ['coalesce', ['image', ['get', 'iconImage']], 'plane-icon'],
   'icon-size': ['case', ['get', 'isHovered'], 1.0, 0.6],
   'icon-allow-overlap': true,
   'icon-ignore-placement': true,
