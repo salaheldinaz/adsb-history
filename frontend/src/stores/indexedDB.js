@@ -122,10 +122,11 @@ const DB_VERSION = 2;
 
     async putMetadata(entry) {
       if (!this.db) await this.initDB();
+      const plain = this.serializeData(entry);
       return new Promise((resolve, reject) => {
         const tx = this.db.transaction(['queryMetadata'], 'readwrite');
         const store = tx.objectStore('queryMetadata');
-        const request = store.put(entry);
+        const request = store.put(plain);
         request.onsuccess = () => resolve();
         request.onerror = () => reject(request.error);
       });
