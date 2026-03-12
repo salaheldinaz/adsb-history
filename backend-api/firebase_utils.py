@@ -40,6 +40,11 @@ def initialize_firebase():
             firebase_initialized = False
             return
         
+        if not os.path.isfile(service_account_path):
+            print(f"Error: Service account path is not a file (e.g. missing file, Docker created a directory): {service_account_path}")
+            firebase_initialized = False
+            return
+        
         # Read the service account file to get the project ID
         with open(service_account_path, 'r') as f:
             service_account_data = json.load(f)
