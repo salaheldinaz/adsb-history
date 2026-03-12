@@ -37,6 +37,11 @@ onMounted(() => {
 
     <AuthGuard>
       <v-navigation-drawer width="300">
+        <div class="pa-3 d-flex align-center gap-2">
+          <img src="/favicon.png" alt="Turnstone" class="flex-shrink-0" width="32" height="32" />
+          <span class="text-subtitle-1 font-weight-medium">Turnstone</span>
+        </div>
+        <v-divider />
         <QueryHistory />
       </v-navigation-drawer>
 
