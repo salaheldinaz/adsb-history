@@ -50,5 +50,15 @@ export const dispatchQuery = async (queryParams) => {
   }
 };
 
+export const getQueryHistoryBackup = async () => {
+  const response = await api.get('/api/query-history/backup');
+  return response.data;
+};
+
+export const saveQueryHistoryBackup = async (data) => {
+  const response = await api.post('/api/query-history/backup', data);
+  return response.data;
+};
+
 // Export the api instance directly
 export { api }; 
