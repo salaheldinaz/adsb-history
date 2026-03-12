@@ -39,7 +39,6 @@ services:
       FIREBASE_SERVICE_ACCOUNT_KEY: ${FIREBASE_SERVICE_ACCOUNT_KEY:-/app/firebase-key.json}
     volumes:
       - ../data:/data
-      - ../data/firebase-key.json:/app/firebase-key.json:ro
     depends_on:
       postgres:
         condition: service_healthy
