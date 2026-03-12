@@ -19,6 +19,11 @@ def initialize_firebase():
         print("Firebase Admin SDK already initialized")
         return
     
+    # Skip when auth is disabled (no Firebase needed)
+    if os.environ.get('DISABLE_AUTH', '').lower() in ('1', 'true', 'yes'):
+        firebase_initialized = False
+        return
+    
     try:
         # Get service account file path from environment variable
         service_account_key = os.environ.get('FIREBASE_SERVICE_ACCOUNT_KEY')
