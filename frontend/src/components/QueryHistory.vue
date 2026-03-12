@@ -56,7 +56,6 @@ onMounted(async () => {
 });
 
 const loadHistoricalQuery = async (queryId) => {
-  console.log('loadHistoricalQuery', queryId);
   const query = await queryHistoryStore.loadQuery(queryId);
   if (query) {
     queryStore.updateQueryParams(query.params);

@@ -68,7 +68,6 @@ export const useQueryHistoryStore = defineStore('queryHistory', {
 
         if (db) {
           // Firebase path
-          console.log('metadataEntry', metadataEntry);
           const metadataRef = await addDoc(collection(db, 'queryMetadata'), metadataEntry);
           if (resultCount > 1000) {
             await indexedDBStore.storeLargeResults(metadataRef.id, searchResults);

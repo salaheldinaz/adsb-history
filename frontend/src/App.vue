@@ -16,9 +16,11 @@ import InfoBox from './components/QueryBuilder/InfoBox.vue';
 import AuthGuard from './components/AuthGuard.vue';
 import Auth from './components/Auth.vue';
 import { useAuthStore } from './stores/auth';
+import { useUiStore } from './stores/ui';
 import { onMounted } from 'vue';
 
 const authStore = useAuthStore();
+const uiStore = useUiStore();
 
 onMounted(() => {
   authStore.initAuth();
@@ -78,6 +80,14 @@ onMounted(() => {
         </v-container>
       </v-main>
     </AuthGuard>
+
+    <v-snackbar
+      v-model="uiStore.snackbar.show"
+      :color="uiStore.snackbar.color"
+      :timeout="uiStore.snackbar.timeout"
+    >
+      {{ uiStore.snackbar.text }}
+    </v-snackbar>
   </v-layout>
 </template>
 
