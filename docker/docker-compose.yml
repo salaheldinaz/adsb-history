@@ -51,7 +51,8 @@ services:
       context: ..
       dockerfile: docker/Dockerfile.frontend
       args:
-        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:5000}
+        # Empty = same-origin; nginx in frontend container proxies /api to api:5000
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
         VITE_DISABLE_AUTH: ${VITE_DISABLE_AUTH:-1}
     depends_on:
       - api
